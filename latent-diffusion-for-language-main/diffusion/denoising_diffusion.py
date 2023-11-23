@@ -563,7 +563,7 @@ class Trainer(object):
     @torch.no_grad()
     def sample(self, num_samples=None, class_id=None, seed=42, test=False):
         # TODO: revert num_samples=None
-        num_samples = 1 #default(num_samples, self.num_samples)
+        num_samples = default(num_samples, self.num_samples)
         accelerator = self.accelerator
         device = accelerator.device
         self.diffusion.to('cpu')
@@ -594,7 +594,7 @@ class Trainer(object):
                 reference_texts['train'] = self.dataset['train']['text'][:num_samples]
 
         milestone = self.step // self.save_and_sample_every
-        print("milestone: ", milestone)
+        # print("milestone: ", milestone)
         # Stores generation outputs for each strategy
         all_texts_lists = {k:[] for k,_ in constant.generate_kwargs.items()}    
 
@@ -621,7 +621,7 @@ class Trainer(object):
                     encoder_output = BaseModelOutput(last_hidden_state=latents.clone())
                     sample_ids = self.bart_model.generate(encoder_outputs=encoder_output, attention_mask=mask.clone(), **kwargs)
                     # TODO: revert
-                    sample_ids = torch.abs(sample_ids.to(torch.short))
+                    sample_ids = torch.abs(sample_ids)
                     # print("sample ids: ", sample_ids)
                     texts_list = [self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in sample_ids]
                     texts_list = [text.strip() for text in texts_list if len(text.strip())>0]
@@ -629,7 +629,7 @@ class Trainer(object):
         
         assert min([len(all_texts_lists[ele]) for ele in all_texts_lists]) >= num_samples
         text_generations = {k:v[:num_samples] for k,v in all_texts_lists.items()} 
-        print("text gen: ", text_generations)
+        # print("text gen: ", text_generations)
 
         metrics = {}
 
@@ -684,14 +684,20 @@ class Trainer(object):
 
 
                 for grad_accum_step in range(self.gradient_accumulate_every):
-                    data = next(self.data_iter).to(device)
-                    print("data: ", data['input_ids'][3])
+                    data = next(self.data_iter) #.to(device)
+                    # print(data)
+                    # print("Data: ", np.shape(np.array(data['text'].cpu())))
+                    # # data = data.to(device)
+                    # data['text'] = torch.tensor(np.stack(data['text'])).to(device)
+                    # data['attention_mask'] = torch.stack(data['attention_mask']).to(device)
                     with torch.no_grad():
-                        latent = self.bart_model.get_encoder()(input_ids = data['input_ids'], attention_mask = data['attention_mask']).last_hidden_state
-                        print("latent shape: ", latent.shape)
+                        # latent = self.bart_model.get_encoder()(input_ids = data['input_ids'], attention_mask = data['attention_mask']).last_hidden_state
+                        latent = data['text']
                         if self.args.normalize_latent:
                             if self.step==0 and grad_accum_step==0:
-                                latent_vecs = torch.cat([latent[i][:torch.sum(data['attention_mask'][i])] for i in range(latent.shape[0])], dim=0)
+                                # print("1: ", data['attention_mask'][0])
+                                # print("2: ", torch.sum(data['attention_mask'][0]))
+                                latent_vecs = torch.cat([latent[i][:torch.sum(data['attention_mask'][i]).to(torch.int)] for i in range(latent.shape[0])], dim=0)
                                 
                                 # Add mean stats to model and EMA wrapper
                                 self.diffusion.latent_mean = torch.mean(latent_vecs, dim=0)
@@ -737,8 +743,13 @@ class Trainer(object):
                             total_val_loss = 0.
                             total_val_ema_loss = 0.
                             for grad_accum_step in range(self.gradient_accumulate_every):
-                                data = next(self.val_iter).to(device)
-                                latent = self.bart_model.get_encoder()(input_ids = data['input_ids'], attention_mask = data['attention_mask']).last_hidden_state
+                                # data = next(self.val_iter).to(device)
+
+                                data = next(self.val_iter) #.to(device)
+                                data['text'] = data['text'].to(device)
+                                data['attention_mask'] = data['attention_mask'].to(device)
+                                # latent = self.bart_model.get_encoder()(input_ids = data['input_ids'], attention_mask = data['attention_mask']).last_hidden_state
+                                latent = data['text']
                                 if self.args.normalize_latent or self.args.scale_latent:
                                     latent = self.diffusion.normalize_latent(latent)
                                     
@@ -759,16 +770,16 @@ class Trainer(object):
 
 
                     if self.step % self.save_and_sample_every == 0:
-                        print("conditional: ", self.diffusion.diffusion_model.class_conditional)
-                        self.sample()
+                        # print("conditional: ", self.diffusion.diffusion_model.class_conditional)
+                        # self.sample()
                         
-                        # if self.diffusion.diffusion_model.class_conditional:
-                        #     for class_id in range(self.diffusion.diffusion_model.num_classes):
-                        #         if self.args.dataset_name == 'ag_news':
-                        #             num_samples = 100
-                        #         elif self.args.dataset_name == 'sst':
-                        #             num_samples = 500
-                        #         self.sample(num_samples=num_samples, class_id=class_id)
+                        if self.diffusion.diffusion_model.class_conditional:
+                            for class_id in range(self.diffusion.diffusion_model.num_classes):
+                                if self.args.dataset_name == 'ag_news':
+                                    num_samples = 100
+                                elif self.args.dataset_name == 'sst':
+                                    num_samples = 500
+                                self.sample(num_samples=num_samples, class_id=class_id)
                         self.save()
                         
                         self.diffusion.train() 

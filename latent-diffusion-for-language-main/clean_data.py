@@ -1,14 +1,8 @@
 import os
 
 def generate_examples(data_file):
-    new_file = './datasets/wikitext-2/train.txt'
-    with open(data_file, encoding="utf-8") as f, open(new_file, 'w') as b:
-        # for idx, row in enumerate(f):
-        #     if row.strip():
-        #         yield idx, {"text": row}
-        #     else:
-        #         yield idx, {"text": ""}
-        # articles = []
+    new_file = './datasets/wikitext-103/train_full.txt'
+    with open(data_file, encoding="utf-8") as f, open(new_file, 'w', encoding="utf-8") as b:
         example = []
         for row in f:
             if row.strip():
@@ -17,16 +11,10 @@ def generate_examples(data_file):
                     if len(example) > 0:
                         article = "".join(example)
                         article = article.replace("\n", "")
-                        # print("article: ", article)
                         
                         b.write("{}\n".format(article))
                     example = []
                 elif '= =' not in row:
                     example.append(row)
-                # elif header:
-                #     throw out
-                # else:
-                #     split by eos, keep count
-                # print("row: ", row)
 
-generate_examples('./datasets/wikitext-2/wiki.train.tokens')
+generate_examples('./datasets/wikitext-103/wiki.train.tokens')

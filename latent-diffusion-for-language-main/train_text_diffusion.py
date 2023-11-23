@@ -25,7 +25,7 @@ def main(args):
         class_conditional = args.class_conditional,
         num_classes = (CONSTANTS.NUM_CLASSES[args.dataset_name] if args.class_conditional else 0),
         class_unconditional_prob= args.class_unconditional_prob,
-    )#.cuda()
+    ).cuda()
 
     args.trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -39,7 +39,7 @@ def main(args):
         p2_loss_weight_gamma = args.p2_loss_weight_gamma,
         objective = args.objective,
         ddim_sampling_eta=args.ddim_sampling_eta,
-    )#.cuda()
+    ).cuda()
 
     trainer = Trainer(
         args=args,
