@@ -386,7 +386,9 @@ class Trainer(object):
         self.diffusion = diffusion
 
         self.num_samples = num_samples
-        self.save_and_sample_every = save_and_sample_every
+        # TODO: revert
+        # self.save_and_sample_every = save_and_sample_every
+        self.save_and_sample_every = 1
 
         self.train_batch_size = train_batch_size
         self.eval_batch_size = eval_batch_size
@@ -562,7 +564,6 @@ class Trainer(object):
             
     @torch.no_grad()
     def sample(self, num_samples=None, class_id=None, seed=42, test=False):
-        # TODO: revert num_samples=None
         num_samples = default(num_samples, self.num_samples)
         accelerator = self.accelerator
         device = accelerator.device
@@ -573,25 +574,25 @@ class Trainer(object):
 
         # Extract references
         reference_texts = {}
-        if exists(class_id):
-            for filter_class_id in range(self.diffusion.diffusion_model.num_classes):
-                filtered_dataset = self.dataset.filter(lambda example: example["label"]==filter_class_id)
-                if test:
-                    reference_texts[f'ref{filter_class_id}_test'] = filtered_dataset['test']['text']
-                    continue
-                reference_texts[f'ref{filter_class_id}_val'] = filtered_dataset['valid']['text']
-                reference_texts[f'ref{filter_class_id}_train'] = filtered_dataset['train']['text']
+        # if exists(class_id):
+        #     for filter_class_id in range(self.diffusion.diffusion_model.num_classes):
+        #         filtered_dataset = self.dataset.filter(lambda example: example["label"]==filter_class_id)
+        #         if test:
+        #             reference_texts[f'ref{filter_class_id}_test'] = filtered_dataset['test']['text']
+        #             continue
+        #         reference_texts[f'ref{filter_class_id}_val'] = filtered_dataset['valid']['text']
+        #         reference_texts[f'ref{filter_class_id}_train'] = filtered_dataset['train']['text']
             
-            for key, reference_text in reference_texts.items():
-                num_samples = min(num_samples, len(reference_text))
-            reference_texts = {k: v[:num_samples] for k, v in reference_texts.items()}
+        #     for key, reference_text in reference_texts.items():
+        #         num_samples = min(num_samples, len(reference_text))
+        #     reference_texts = {k: v[:num_samples] for k, v in reference_texts.items()}
+        # else:
+        if test:
+            reference_texts[f'test'] = self.dataset['test']['text'][:num_samples]
+            reference_texts['train'] = self.dataset['train']['text'][:num_samples]
         else:
-            if test:
-                reference_texts[f'test'] = self.dataset['test']['text'][:num_samples]
-                reference_texts['train'] = self.dataset['train']['text'][:num_samples]
-            else:
-                reference_texts['val'] = self.dataset['valid']['text'][:num_samples]
-                reference_texts['train'] = self.dataset['train']['text'][:num_samples]
+            reference_texts['val'] = self.dataset['valid']['text'][:num_samples]
+            reference_texts['train'] = self.dataset['train']['text'][:num_samples]
 
         milestone = self.step // self.save_and_sample_every
         # print("milestone: ", milestone)
@@ -615,6 +616,8 @@ class Trainer(object):
             
             for (latents, mask) in model_outputs:
                 latents, mask = latents.to(device), mask.to(device)
+                print("latents: ", latents)
+                print("mask: ", mask)
                 if self.args.normalize_latent:
                     latents = self.ema.ema_model.unnormalize_latent(latents)
                 for k, kwargs in constant.generate_kwargs.items():
@@ -765,13 +768,13 @@ class Trainer(object):
 
                             logs = {"loss": total_loss, "val_loss": total_val_loss, "val_ema_loss": total_val_ema_loss, "grad_norm": grad_norm, "lr": self.lr_scheduler.get_last_lr()[0], "step": self.step, "epoch": (self.step*self.gradient_accumulate_every)/len(self.dataloader), "samples": self.step*self.train_batch_size*self.gradient_accumulate_every}
                             pbar.set_postfix(**logs)
-                            accelerator.log(logs, step=self.step)     
-                        self.diffusion.train()           
+                            accelerator.log(logs, step=self.step)
+                        self.diffusion.train()
 
 
                     if self.step % self.save_and_sample_every == 0:
                         # print("conditional: ", self.diffusion.diffusion_model.class_conditional)
-                        # self.sample()
+                        self.sample()
                         
                         if self.diffusion.diffusion_model.class_conditional:
                             for class_id in range(self.diffusion.diffusion_model.num_classes):
