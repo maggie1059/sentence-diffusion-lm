@@ -1,0 +1,1 @@
+python train_text_diffusion.py --gen_data --resume_dir saved_models/wikitext103/100k --normalize_latent --sampling_timesteps 250 --num_samples 10 --ddim_sampling_eta 1

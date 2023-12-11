@@ -387,8 +387,8 @@ class Trainer(object):
 
         self.num_samples = num_samples
         # TODO: revert
-        # self.save_and_sample_every = save_and_sample_every
-        self.save_and_sample_every = 1
+        self.save_and_sample_every = save_and_sample_every
+        # self.save_and_sample_every = 1
 
         self.train_batch_size = train_batch_size
         self.eval_batch_size = eval_batch_size
@@ -470,7 +470,7 @@ class Trainer(object):
             'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None
         }
 
-        torch.save(data, str(self.results_folder / f'model.pt'))
+        torch.save(data, str(self.results_folder / f'model_{self.step}.pt'))
 
     def load(self, file_path=None):
         file_path = Path(file_path) if exists(file_path) else self.results_folder
@@ -528,37 +528,59 @@ class Trainer(object):
 
     @torch.no_grad()
     def gen_synthetic_dataset(self, num_samples, seed=42):
-        num_classes = self.diffusion.diffusion_model.num_classes
+        num_classes = 1#self.diffusion.diffusion_model.num_classes
         num_samples_per_class = num_samples//num_classes
         assert num_samples % num_classes == 0, f'Dataset size ({num_samples}) must be divisible by the number of classes ({num_classes})'
         data = {'text': [], 'label': []}
         self.ema.ema_model.eval()
         torch.manual_seed(seed)
         device = self.accelerator.device
+
+        all_text = []
+        all_mask = []
         for class_id in range(num_classes):
-            text = []
-            while len(text) < num_samples_per_class:
-                batches = num_to_groups(num_samples_per_class-len(text), self.eval_batch_size)
+
+            while len(all_text) < num_samples_per_class:
+                batches = num_to_groups(num_samples_per_class-len(all_text), self.eval_batch_size)
                 model_outputs = list(map(lambda n: tuple(x.to('cpu') for x in self.ema.ema_model.sample(batch_size=n, length=self.length_categorical.sample((n,)), class_id=torch.tensor([class_id]*n, dtype=torch.long, device=device))), batches))
                 
                 for (latents, mask) in model_outputs:
                     latents, mask = latents.to(device), mask.to(device)
                     if self.args.normalize_latent:
                         latents = self.ema.ema_model.unnormalize_latent(latents)
-                    encoder_output = BaseModelOutput(last_hidden_state=latents.clone())
-                    sample_ids = self.bart_model.generate(encoder_outputs=encoder_output, attention_mask=mask.clone(), **constant.generate_kwargs['beam'])
-                    texts_list = [self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in sample_ids]
-                    texts_list = [text.strip() for text in texts_list if len(text.strip())>0]
-                    text.extend(texts_list)
-            data['text'].extend(text)
-            data['label'].extend([class_id]*num_samples_per_class)
+                    print("latents: ", latents.shape)
+                    print("mask: ", mask.shape)
+                    latents, mask = latents.to('cpu').detach(), mask.to('cpu').detach()
+                    for i in range(latents.shape[0]):
+                        l1 = latents[i] # 64. 768
+                        l1 = torch.flatten(l1)
+                        m1 = mask[i].long() # 64
+                        l1 = l1.numpy(force=True)
+                        all_text.append(l1)
+                        m1 = m1.numpy(force=True)
+                        all_mask.append(m1)
+        all_text = np.stack(all_text)
+        all_mask = np.stack(all_mask)
 
-        save_path = os.path.join(self.results_folder, f'synth_sample{num_samples}_seed{seed}.csv')
-        print(save_path)
-        with open(save_path, "w") as outfile:
-            writer = csv.writer(outfile)
-            writer.writerow(data.keys())
-            writer.writerows(zip(*data.values()))
+        new_csv = os.path.join(self.results_folder, f'synth_sent_sample{num_samples}_seed{seed}.csv')
+        new_mask_csv = os.path.join(self.results_folder, f'synth_mask_sample{num_samples}_seed{seed}.csv')
+
+        np.savetxt(new_csv, all_text, delimiter=",")
+        np.savetxt(new_mask_csv, all_mask, delimiter=",")
+                    # encoder_output = BaseModelOutput(last_hidden_state=latents.clone())
+                    # sample_ids = self.bart_model.generate(encoder_outputs=encoder_output, attention_mask=mask.clone(), **constant.generate_kwargs['beam'])
+                    # texts_list = [self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in sample_ids]
+                    # texts_list = [text.strip() for text in texts_list if len(text.strip())>0]
+                    # text.extend(texts_list)
+        #     data['text'].extend(text)
+        #     data['label'].extend([class_id]*num_samples_per_class)
+
+        # save_path = os.path.join(self.results_folder, f'synth_sample{num_samples}_seed{seed}.csv')
+        # print(save_path)
+        # with open(save_path, "w") as outfile:
+        #     writer = csv.writer(outfile)
+        #     writer.writerow(data.keys())
+        #     writer.writerows(zip(*data.values()))
 
             
             
@@ -568,9 +590,12 @@ class Trainer(object):
         accelerator = self.accelerator
         device = accelerator.device
         self.diffusion.to('cpu')
-        torch.cuda.empty_cache() 
+        print("on cpu now")
+        # torch.cuda.empty_cache() 
+        # print("emptied cache")
 
         self.ema.ema_model.eval()
+        print("called eval on ema")
 
         # Extract references
         reference_texts = {}
@@ -594,6 +619,8 @@ class Trainer(object):
             reference_texts['val'] = self.dataset['valid']['text'][:num_samples]
             reference_texts['train'] = self.dataset['train']['text'][:num_samples]
 
+        print("num samples: ", num_samples)
+
         milestone = self.step // self.save_and_sample_every
         # print("milestone: ", milestone)
         # Stores generation outputs for each strategy
@@ -609,64 +636,97 @@ class Trainer(object):
                 return self.class_categorical.sample((n,)).to(device)
             return None
         # Loop until enough senetences have been generated across all strategies 
-        while min([len(all_texts_lists[ele]) for ele in all_texts_lists]) < num_samples:
-            print([len(all_texts_lists[ele]) for ele in all_texts_lists])
-            batches = num_to_groups(num_samples-min([len(all_texts_lists[ele]) for ele in all_texts_lists]), max(self.eval_batch_size,self.train_batch_size))
+        all_text = []
+        all_mask = []
+        while len(all_text) < num_samples:
+        # while min([len(all_texts_lists[ele]) for ele in all_texts_lists]) < num_samples:
+            # print([len(all_texts_lists[ele]) for ele in all_texts_lists])
+            print("len of all_text: ", len(all_text))
+            # batches = num_to_groups(num_samples-min([len(all_texts_lists[ele]) for ele in all_texts_lists]), max(self.eval_batch_size,self.train_batch_size))
+            batches = num_to_groups(num_samples-len(all_text), max(self.eval_batch_size,self.train_batch_size))
+            print("batches: ", batches)
             model_outputs = list(map(lambda n: tuple(x.to('cpu') for x in self.ema.ema_model.sample(batch_size=n, length=self.length_categorical.sample((n,)), class_id=get_class_id(n))), batches))
-            
+            print("num model outputs: ", len(model_outputs))
             for (latents, mask) in model_outputs:
                 latents, mask = latents.to(device), mask.to(device)
-                print("latents: ", latents)
-                print("mask: ", mask)
                 if self.args.normalize_latent:
                     latents = self.ema.ema_model.unnormalize_latent(latents)
-                for k, kwargs in constant.generate_kwargs.items():
-                    encoder_output = BaseModelOutput(last_hidden_state=latents.clone())
-                    sample_ids = self.bart_model.generate(encoder_outputs=encoder_output, attention_mask=mask.clone(), **kwargs)
-                    # TODO: revert
-                    sample_ids = torch.abs(sample_ids)
-                    # print("sample ids: ", sample_ids)
-                    texts_list = [self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in sample_ids]
-                    texts_list = [text.strip() for text in texts_list if len(text.strip())>0]
-                    all_texts_lists[k].extend(texts_list)
+                print("latents: ", latents.shape)
+                print("mask: ", mask.shape)
+                latents, mask = latents.to('cpu').detach(), mask.to('cpu').detach()
+                for i in range(latents.shape[0]):
+                    l1 = latents[i] # 64. 768
+                    l1 = torch.flatten(l1)
+                    print("latents: ", l1.shape)
+                    m1 = mask[i].long() # 64
+                    print("mask: ", m1.shape)
+                    l1 = l1.numpy(force=True)
+                    print("l1: ", l1)
+                    all_text.append(l1)
+                    m1 = m1.numpy(force=True)
+                    print("m1: ", m1)
+                    all_mask.append(m1)
+        # all_text = torch.stack(all_text).numpy
+        # all_mask = torch.stack(all_mask).numpy
+        all_text = np.stack(all_text)
+        all_mask = np.stack(all_mask)
+
+        new_csv = os.path.join(self.results_folder, 'test_sent.csv')
+        new_mask_csv = os.path.join(self.results_folder, 'test_mask.csv')
+
+        np.savetxt(new_csv, all_text, delimiter=",")
+        np.savetxt(new_mask_csv, all_mask, delimiter=",")
+
+                # exit()
+                # if self.args.normalize_latent:
+                #     latents = self.ema.ema_model.unnormalize_latent(latents)
+        #         for k, kwargs in constant.generate_kwargs.items():
+        #             encoder_output = BaseModelOutput(last_hidden_state=latents.clone())
+        #             sample_ids = self.bart_model.generate(encoder_outputs=encoder_output, attention_mask=mask.clone(), **kwargs)
+        #             # TODO: revert
+        #             sample_ids = torch.abs(sample_ids)
+        #             # print("sample ids: ", sample_ids)
+        #             texts_list = [self.tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=True) for g in sample_ids]
+        #             texts_list = [text.strip() for text in texts_list if len(text.strip())>0]
+        #             all_texts_lists[k].extend(texts_list)
         
-        assert min([len(all_texts_lists[ele]) for ele in all_texts_lists]) >= num_samples
-        text_generations = {k:v[:num_samples] for k,v in all_texts_lists.items()} 
+        # assert min([len(all_texts_lists[ele]) for ele in all_texts_lists]) >= num_samples
+        # text_generations = {k:v[:num_samples] for k,v in all_texts_lists.items()} 
         # print("text gen: ", text_generations)
 
-        metrics = {}
+        # metrics = {}
 
-        self.ema.to('cpu')
-        torch.cuda.empty_cache() 
-        for strategy, all_texts_list in text_generations.items():
-            class_id_prefix = f'cond{class_id}_' if exists(class_id) else ''
-            file_utils.save_text_samples(all_texts_list, os.path.join(self.results_folder, f'{"eval-" if self.args.eval else ""}{f"eval{seed}-" if self.args.eval_test else ""}{class_id_prefix}{strategy}-sample-{milestone}.txt'))
-            metrics[f"model/{strategy}/{class_id_prefix}perplexity"] = evaluation.compute_perplexity(all_texts_list)
-            metrics[f"model/{strategy}/{class_id_prefix}unique_wordcount"] = evaluation.compute_wordcount(all_texts_list)
-            ngram_metrics = evaluation.compute_diversity(all_texts_list)
-            for k, v in ngram_metrics.items():
-                metrics[f"model/{strategy}/{class_id_prefix}{k}"] = v
-            metrics[f"model/{strategy}/{class_id_prefix}memorization"] = evaluation.compute_memorization(all_texts_list, self.dataset['train']['text'])
-            table = wandb.Table( 
-                columns=['Samples'], data=[[text] for text in all_texts_list])
-            accelerator.log({f"model/{strategy}/{class_id_prefix}samples": table}, self.step)
+        # self.ema.to('cpu')
+        # torch.cuda.empty_cache() 
+        # for strategy, all_texts_list in text_generations.items():
+        #     class_id_prefix = f'cond{class_id}_' if exists(class_id) else ''
+        #     file_utils.save_text_samples(all_texts_list, os.path.join(self.results_folder, f'{"eval-" if self.args.eval else ""}{f"eval{seed}-" if self.args.eval_test else ""}{class_id_prefix}{strategy}-sample-{milestone}.txt'))
+        #     metrics[f"model/{strategy}/{class_id_prefix}perplexity"] = evaluation.compute_perplexity(all_texts_list)
+        #     metrics[f"model/{strategy}/{class_id_prefix}unique_wordcount"] = evaluation.compute_wordcount(all_texts_list)
+        #     ngram_metrics = evaluation.compute_diversity(all_texts_list)
+        #     for k, v in ngram_metrics.items():
+        #         metrics[f"model/{strategy}/{class_id_prefix}{k}"] = v
+        #     metrics[f"model/{strategy}/{class_id_prefix}memorization"] = evaluation.compute_memorization(all_texts_list, self.dataset['train']['text'])
+        #     table = wandb.Table( 
+        #         columns=['Samples'], data=[[text] for text in all_texts_list])
+        #     accelerator.log({f"model/{strategy}/{class_id_prefix}samples": table}, self.step)
 
-            # Only evaluate MAUVE if generations are reasonable
-            if metrics[f"model/{strategy}/{class_id_prefix}perplexity"] > 5000:
-                continue
+        #     # Only evaluate MAUVE if generations are reasonable
+        #     if metrics[f"model/{strategy}/{class_id_prefix}perplexity"] > 5000:
+        #         continue
 
-            for mauve_model_id in ["gpt2-large", "all-mpnet-base-v2"]:
-                for key, reference_text in reference_texts.items():
-                    metrics[f"model/{strategy}/{mauve_model_id}_{class_id_prefix}{key}_mauve"], _ = evaluation.compute_mauve(all_texts_list, reference_text, mauve_model_id)
+        #     for mauve_model_id in ["gpt2-large", "all-mpnet-base-v2"]:
+        #         for key, reference_text in reference_texts.items():
+        #             metrics[f"model/{strategy}/{mauve_model_id}_{class_id_prefix}{key}_mauve"], _ = evaluation.compute_mauve(all_texts_list, reference_text, mauve_model_id)
 
-        if len(self.reference_dict) == 0 or test:
-            self.log_reference_metrics(test)
-        if test:
-            metrics_dict = {**metrics,**self.reference_dict}
-            metrics_dict = {f'{k}_seed{seed}':v for k,v in metrics_dict.items()}
-            accelerator.log(metrics_dict, self.step)
-        else:
-            accelerator.log({**metrics,**self.reference_dict}, self.step)
+        # if len(self.reference_dict) == 0 or test:
+        #     self.log_reference_metrics(test)
+        # if test:
+        #     metrics_dict = {**metrics,**self.reference_dict}
+        #     metrics_dict = {f'{k}_seed{seed}':v for k,v in metrics_dict.items()}
+        #     accelerator.log(metrics_dict, self.step)
+        # else:
+        #     accelerator.log({**metrics,**self.reference_dict}, self.step)
         torch.cuda.empty_cache() 
         self.diffusion.to(device)
         self.ema.to(device)
@@ -676,6 +736,7 @@ class Trainer(object):
     def train(self):
         accelerator = self.accelerator
         device = accelerator.device
+        print("device: ", device)
 
         with tqdm(initial = self.step, total = self.train_num_steps, disable = not accelerator.is_main_process) as pbar:
 
@@ -734,6 +795,7 @@ class Trainer(object):
                 accelerator.wait_for_everyone()
 
                 self.step += 1
+                # print("finished a step")
                 if accelerator.is_main_process:
                     self.ema.to(device)
                     self.ema.update()
@@ -774,7 +836,7 @@ class Trainer(object):
 
                     if self.step % self.save_and_sample_every == 0:
                         # print("conditional: ", self.diffusion.diffusion_model.class_conditional)
-                        self.sample()
+                        # self.sample()
                         
                         if self.diffusion.diffusion_model.class_conditional:
                             for class_id in range(self.diffusion.diffusion_model.num_classes):

@@ -17,7 +17,7 @@ import os
 import math
 from typing import Optional, Tuple, Union
 from sentence_transformers import SentenceTransformer
-model = SentenceTransformer('all-MiniLM-L6-v2')
+model = SentenceTransformer('all-mpnet-base-v2')
 
 def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
     betas = []
@@ -54,7 +54,7 @@ def noise_tensor(x_start):
 
     return output
 
-class Dialog(Dataset):  
+class Wikitext103(Dataset):  
     def __init__(self, split='train'):
 
         self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
@@ -63,35 +63,35 @@ class Dialog(Dataset):
         self.labels = []
         self.attention = []
 
-        file_name = 'dialogues_' + split + '.txt'
+        # file_name = 'dialogues_' + split + '.txt'
 
-        # max_seq_len = 200
-        with open(file_name, encoding="utf-8") as f:
-            for idx, row1 in enumerate(f):
-                if row1.strip():
-                    row = row1.split('__eou__')[:-1]
-                    for utterance in row:
-                      # utter = utterance + " <|endoftext|>"
-                      # print("utterance: ", utterance)
-                      # utter_tok = self.tokenizer.encode(utter)
-                      encoding = self.tokenizer(utterance, return_tensors='pt', padding='max_length', truncation=True, max_length=64)
-                      utter_tok = torch.LongTensor(encoding['input_ids'])
-                      attention_mask = torch.LongTensor(encoding['attention_mask'])
-                      # print("utter tok: ", utter_tok)
-                      # print("attention mask: ", attention_mask)
+        # # max_seq_len = 200
+        # with open(file_name, encoding="utf-8") as f:
+        #     for idx, row1 in enumerate(f):
+        #         if row1.strip():
+        #             row = row1.split('__eou__')[:-1]
+        #             for utterance in row:
+        #               # utter = utterance + " <|endoftext|>"
+        #               # print("utterance: ", utterance)
+        #               # utter_tok = self.tokenizer.encode(utter)
+        #               encoding = self.tokenizer(utterance, return_tensors='pt', padding='max_length', truncation=True, max_length=64)
+        #               utter_tok = torch.LongTensor(encoding['input_ids'])
+        #               attention_mask = torch.LongTensor(encoding['attention_mask'])
+        #               # print("utter tok: ", utter_tok)
+        #               # print("attention mask: ", attention_mask)
 
-                      # self.labels.append(torch.tensor(utter_tok))
-                      self.labels.append(utter_tok)
-                      self.attention.append(attention_mask)
+        #               # self.labels.append(torch.tensor(utter_tok))
+        #               self.labels.append(utter_tok)
+        #               self.attention.append(attention_mask)
 
-                      utter_encode = [utterance] + ['[PAD]' for _ in range(len(utter_tok[0])-1)]
-                      # print("utter_encode: ", utter_encode)
+        #               utter_encode = [utterance] + ['[PAD]' for _ in range(len(utter_tok[0])-1)]
+        #               # print("utter_encode: ", utter_encode)
 
-                      embed = torch.tensor(model.encode(utter_encode), device="cuda")
-                      noise_embed = noise_tensor(embed)
-                      # print("noise embed: ", noise_embed.shape)
+        #               embed = torch.tensor(model.encode(utter_encode), device="cuda")
+        #               noise_embed = noise_tensor(embed)
+        #               # print("noise embed: ", noise_embed.shape)
 
-                      self.text.append(noise_embed)
+        #               self.text.append(noise_embed)
 
         self.text_count = len(self.labels)
         
@@ -127,9 +127,9 @@ class Dialog(Dataset):
 
         return batched_data
     
-train_dataset = Dialog('train')
-# val_dataset = train_dataset
-val_dataset = Dialog('valid')
+# train_dataset = Wikitext103('train')
+# # val_dataset = train_dataset
+# val_dataset = Wikitext103('valid')
 
 class GPT2SentModel(GPT2Model):
     _keys_to_ignore_on_load_missing = ["attn.masked_bias"]
